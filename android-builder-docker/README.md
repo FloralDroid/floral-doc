@@ -1,46 +1,57 @@
-# Build redroid with docker
+# Build Docker
+
+The default configuration uses the upstream AOSP manifest and Debian package
+servers. Proxies and mirrors are optional; leave the corresponding variables
+unset to use the defaults.
 
 ```bash
 #####################
 # fetch code
 #####################
-mkdir ~/redroid && cd ~/redroid
+mkdir ~/floral && cd ~/floral
 
-# check supported branch in https://github.com/remote-android/redroid-patches.git
-repo init -u https://android.googlesource.com/platform/manifest --git-lfs --depth=1 -b android-11.0.0_r48
+# Optional examples:
+# export HTTP_PROXY=http://proxy.example:8080
+# export HTTPS_PROXY=http://proxy.example:8080
+# export NO_PROXY=localhost,127.0.0.1
+# export REPO_URL=https://github.com/aosp-mirror/tools_repo.git
+# export AOSP_MANIFEST_URL=https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/manifest
 
-# add local manifests
-git clone https://github.com/remote-android/local_manifests.git ~/redroid/.repo/local_manifests -b 11.0.0
+AOSP_MANIFEST_URL=${AOSP_MANIFEST_URL:-https://android.googlesource.com/platform/manifest}
+LOCAL_MANIFEST_URL=${LOCAL_MANIFEST_URL:-https://github.com/FloralDroid/local_manifests.git}
+
+repo init -u "$AOSP_MANIFEST_URL" --git-lfs --depth=1 -b android-12.0.0_r32
+
+# Add the FloralDroid projects. platform_manifests is not used.
+git clone "$LOCAL_MANIFEST_URL" ~/floral/.repo/local_manifests -b 12.0.0
 
 # sync code
-repo sync -c
-
-# apply redroid patches
-git clone https://github.com/remote-android/redroid-patches.git ~/redroid-patches
-~/redroid-patches/apply-patch.sh ~/redroid
-
-#####################
-# fetch code (LEGACY)
-#####################
-mkdir ~/redroid && cd ~/redroid
-
-repo init -u https://github.com/remote-android/platform_manifests.git -b redroid-11.0.0 --depth=1 --git-lfs
-# check @remote-android/platform_manifests for supported branch / manifest
-
-repo sync -c
+repo sync -c -j$(nproc)
 
 #####################
 # create builder
 #####################
-docker build --build-arg userid=$(id -u) --build-arg groupid=$(id -g) --build-arg username=$(id -un) -t redroid-builder .
+# Debian main and security mirrors are independently optional, for example:
+# export APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+# export APT_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
+docker build \
+    --build-arg userid=$(id -u) \
+    --build-arg groupid=$(id -g) \
+    --build-arg username=$(id -un) \
+    --build-arg APT_MIRROR="${APT_MIRROR:-}" \
+    --build-arg APT_SECURITY_MIRROR="${APT_SECURITY_MIRROR:-}" \
+    --build-arg HTTP_PROXY="${HTTP_PROXY:-}" \
+    --build-arg HTTPS_PROXY="${HTTPS_PROXY:-}" \
+    --build-arg NO_PROXY="${NO_PROXY:-}" \
+    -t floral-builder .
 
 #####################
 # start builder
 #####################
-docker run -it --rm --hostname redroid-builder --name redroid-builder -v ~/redroid:/src redroid-builder
+docker run -it --rm --hostname floral-builder --name floral-builder -v ~/floral:/src floral-builder
 
 #####################
-# build redroid
+# build floral
 #####################
 cd /src
 
@@ -57,7 +68,7 @@ m
 #####################
 # create redroid image in *HOST*
 #####################
-cd ~/redroid/out/target/product/redroid_x86_64
+cd ~/floral/out/target/product/redroid_x86_64
 
 sudo mount system.img system -o ro
 sudo mount vendor.img vendor -o ro
@@ -67,6 +78,14 @@ sudo umount system vendor
 # create rootfs only image for develop purpose
 tar --xattrs -c -C root . | docker import -c 'ENTRYPOINT ["/init", "androidboot.hardware=redroid"]' - redroid-dev
 ```
+
+`HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` are inherited by `repo`, Git, and
+the Docker build only when configured. Proxy credentials are passed as Docker's
+predefined proxy build arguments and are not added to the Dockerfile.
+
+When `/src` is mounted, the container automatically registers the ncurses 5
+and tinfo 5 libraries from AOSP's bundled host sysroot. This keeps Android 12's
+legacy RenderScript clang working on Debian 13 without replacing system libc.
 
 ## Build with GApps
 

@@ -19,7 +19,7 @@ git config --global user.email "you@example.com"
 git config --global user.name "Your Name"
 
 # add current user to Docker group so we don't have to type 'sudo' to run Docker
-sudo usermod -aG docker ubuntu # Set your username here
+sudo usermod -aG docker "$USER"
 sudo systemctl enable docker
 sudo systemctl restart docker
 
@@ -27,24 +27,33 @@ sudo systemctl restart docker
 
 # check if Docker is running
 docker --version && docker ps -as
-# Docker version 24.0.5, build 24.0.5-0ubuntu1~22.04.1
+# Docker version 24.0.5
 # CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES     SIZE
 ```
 #### 2) Fetch and sync Android and Redroid codes
 ```
 mkdir ~/redroid && cd ~/redroid
 
-# check supported branch in https://github.com/remote-android/redroid-patches.git
-repo init -u https://android.googlesource.com/platform/manifest --git-lfs --depth=1 -b android-12.0.0_r34
+# All mirror and proxy settings are optional. Without them the upstream
+# services are used.
+# export HTTP_PROXY=http://proxy.example:8080
+# export HTTPS_PROXY=http://proxy.example:8080
+# export NO_PROXY=localhost,127.0.0.1
+# export REPO_URL=https://github.com/aosp-mirror/tools_repo.git
+# export AOSP_MANIFEST_URL=https://mirrors.tuna.tsinghua.edu.cn/git/AOSP/platform/manifest
 
-# add local manifests
-git clone https://github.com/remote-android/local_manifests.git ~/redroid/.repo/local_manifests -b 12.0.0
+AOSP_MANIFEST_URL=${AOSP_MANIFEST_URL:-https://android.googlesource.com/platform/manifest}
+LOCAL_MANIFEST_URL=${LOCAL_MANIFEST_URL:-https://github.com/FloralDroid/local_manifests.git}
+
+repo init -u "$AOSP_MANIFEST_URL" --git-lfs --depth=1 -b android-12.0.0_r32
+
+# Add FloralDroid projects. The retired platform_manifests repository is not used.
+git clone "$LOCAL_MANIFEST_URL" ~/redroid/.repo/local_manifests -b 12.0.0
 
 # sync code | ~100GB of data | ~20 minutes on a fast CPU + connection
 repo sync -c -j$(nproc)
 
-# get latest Dockerfile from Redroid repository
-wget https://raw.githubusercontent.com/remote-android/redroid-doc/master/android-builder-docker/Dockerfile
+# Use the Dockerfile from this floral-doc/android-builder-docker directory.
 
 # check if 'Webview.apk' files were properly synced by 'git-lfs'. Each .apk should be at least ~80MB in size.
 find ~/redroid/external/chromium-webview -type f -name "*.apk" -exec du -h {} +
@@ -99,16 +108,27 @@ find ~/redroid/external/chromium-webview -type f -name "*.apk" -exec du -h {} +
   
   While importing the image in the Step 6 (docker import command), change the entrypoint to `ENTRYPOINT ["/init", "androidboot.hardware=redroid", "ro.setupwizard.mode=DISABLED"]`, so you avoid doing it manually at every container start, or if you want set `ro.setupwizard.mode=DISABLED` at container start, skipping the GApps setup wizard at redroid boot. Optional line available in Step 6.
 
-#### 4) Apply Redroid patches, create builder and start it
+#### 4) Create builder and start it
 ```
-# apply redroid patches
-git clone https://github.com/remote-android/redroid-patches.git ~/redroid-patches
-~/redroid-patches/apply-patch.sh ~/redroid
-
-docker buildx create --use
-docker buildx build --build-arg userid=$(id -u) --build-arg groupid=$(id -g) --build-arg username=$(id -un) -t redroid-builder --load .
+# Debian main and security mirrors are independently optional:
+# export APT_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian
+# export APT_SECURITY_MIRROR=https://mirrors.tuna.tsinghua.edu.cn/debian-security
+docker build \
+  --build-arg userid=$(id -u) \
+  --build-arg groupid=$(id -g) \
+  --build-arg username=$(id -un) \
+  --build-arg APT_MIRROR="${APT_MIRROR:-}" \
+  --build-arg APT_SECURITY_MIRROR="${APT_SECURITY_MIRROR:-}" \
+  --build-arg HTTP_PROXY="${HTTP_PROXY:-}" \
+  --build-arg HTTPS_PROXY="${HTTPS_PROXY:-}" \
+  --build-arg NO_PROXY="${NO_PROXY:-}" \
+  -t redroid-builder .
 docker run -it --privileged --rm --hostname redroid-builder --name redroid-builder -v ~/redroid:/src redroid-builder
 ```
+The container entrypoint automatically exposes only AOSP's bundled ncurses 5
+and tinfo 5 compatibility libraries. They are required by Android 12's legacy
+RenderScript clang and do not replace Debian 13 system libraries.
+
 #### 5) Build Redroid
 #### Now we should be in the `redroid-builder` docker container
 ```
