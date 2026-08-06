@@ -28,7 +28,7 @@ mkdir $HOME/data-redroid11
 sed -i '/lxc.include/d' /var/lib/lxc/redroid11/config
 <<EOF cat >> /var/lib/lxc/redroid11/config
 ### hacked
-lxc.init.cmd = /init androidboot.hardware=redroid androidboot.redroid_gpu_mode=guest
+lxc.init.cmd = /init androidboot.hardware=redroid androidboot.floral_gpu_mode=guest
 lxc.apparmor.profile = unconfined
 lxc.autodev = 1
 lxc.autodev.tmpfs.size = 25000000
