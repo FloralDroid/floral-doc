@@ -47,7 +47,7 @@ SYSTEM_MOUNT=""
 VENDOR_MOUNT=""
 EXPORT_TMP=""
 CHECKSUM_TMP=""
-PATCH_HISTORY_TMP=""
+PATCH_APPLICATION_ACTIVE=0
 BUILDER_STARTED=0
 SUDO=()
 
@@ -72,7 +72,7 @@ usage() {
     cat <<'EOF'
 Usage: build_floral.sh [options]
 
-Synchronize FloralDroid sources, apply only missing ReDroid patches, build
+Synchronize FloralDroid sources, apply the complete ReDroid patch set, build
 inside the existing floral-builder image, import the runtime image, and export
 it as a gzip-compressed Docker archive.
 
@@ -154,6 +154,11 @@ cleanup() {
     trap - EXIT INT TERM
     set +e
 
+    if ((PATCH_APPLICATION_ACTIVE)); then
+        abort_redroid_patch_operations ||
+            warn "One or more ReDroid patch operations require manual cleanup"
+    fi
+
     if ! unmount_images; then
         warn "One or more image mounts require manual cleanup under $MOUNT_ROOT"
     fi
@@ -164,10 +169,6 @@ cleanup() {
     if [[ -n "$CHECKSUM_TMP" && -f "$CHECKSUM_TMP" ]]; then
         rm -f -- "$CHECKSUM_TMP"
     fi
-    if [[ -n "$PATCH_HISTORY_TMP" && -f "$PATCH_HISTORY_TMP" ]]; then
-        rm -f -- "$PATCH_HISTORY_TMP"
-    fi
-
     if ((rc != 0 && BUILDER_STARTED)) && container_exists; then
         warn "Builder container preserved for diagnosis: $BUILDER_CONTAINER"
         printf '  docker logs %q\n' "$BUILDER_CONTAINER" >&2
@@ -300,102 +301,103 @@ sync_sources() {
 }
 
 #####################
-# Incremental patch application
+# ReDroid patch application
 #####################
 
-detect_aosp_tag() {
+redroid_patch_root() {
     local revision
+    local tag
+    local patch_root
+
     revision=$(xmllint --xpath 'string(/manifest/default/@revision)' \
         "$AOSP_DIR/.repo/manifests/default.xml")
-    [[ -n "$revision" ]] || die "Cannot detect AOSP revision from the manifest"
-    printf '%s\n' "${revision##*/}"
+    tag=${revision##*/}
+    patch_root="$PATCH_DIR/$tag"
+
+    [[ -n "$tag" ]] || die "Cannot detect AOSP revision from the manifest"
+    [[ -d "$patch_root" ]] || die "Patch directory does not exist: $patch_root"
+    printf '%s\n' "$patch_root"
 }
 
-stable_patch_id() {
-    local patch=$1
-    git patch-id --stable <"$patch" | awk 'NR == 1 { print $1 }'
-}
-
-ensure_patch_repo_clean() {
-    local repo_dir=$1
-    local project=$2
-    local git_dir
-    local status
-
-    git_dir=$(git -C "$repo_dir" rev-parse --absolute-git-dir)
-    [[ ! -d "$git_dir/rebase-apply" && ! -d "$git_dir/rebase-merge" ]] ||
-        die "Unfinished Git operation in $project: $repo_dir"
-
-    status=$(git -C "$repo_dir" status --porcelain --untracked-files=no)
-    [[ -z "$status" ]] || die "Tracked local changes in patched project $project"
-}
-
-apply_missing_patches() {
-    local tag=${1:-$(detect_aosp_tag)}
-    local patch_root="$PATCH_DIR/$tag"
+redroid_patch_operations_clean() {
+    local patch_root
     local patch_directory
     local project
     local source_repo
-    local history_file
-    local patch
-    local patch_id
-    local applied_commit
-    local applied=0
-    local skipped=0
+    local git_dir
+    local failed=0
 
-    [[ -d "$patch_root" ]] || die "Patch directory does not exist: $patch_root"
-
-    log "Apply missing ReDroid patches for $tag"
-
+    patch_root=$(redroid_patch_root)
     while IFS= read -r patch_directory; do
         project=${patch_directory#"$patch_root"/}
         source_repo="$AOSP_DIR/$project"
-        [[ -d "$source_repo/.git" ]] || die "Source repository not found: $source_repo"
+        [[ -d "$source_repo/.git" ]] || continue
+        git_dir=$(git -C "$source_repo" rev-parse --absolute-git-dir)
 
-        ensure_patch_repo_clean "$source_repo" "$project"
-        PATCH_HISTORY_TMP=$(mktemp /tmp/floral-patch-history.XXXXXX)
-        history_file=$PATCH_HISTORY_TMP
-
-        if ! git -C "$source_repo" log -p --no-merges \
-            --max-count="$PATCH_HISTORY_DEPTH" --format='commit %H' |
-            git patch-id --stable >"$history_file"; then
-            rm -f -- "$history_file"
-            PATCH_HISTORY_TMP=""
-            die "Cannot calculate patch history for $project"
+        if [[ -d "$git_dir/rebase-apply" || -d "$git_dir/rebase-merge" ]]; then
+            warn "Unfinished Git operation in patch project: $project"
+            failed=1
         fi
-
-        printf '\nproject: %s\n' "$project"
-        while IFS= read -r patch; do
-            if ! patch_id=$(stable_patch_id "$patch") || [[ -z "$patch_id" ]]; then
-                rm -f -- "$history_file"
-                PATCH_HISTORY_TMP=""
-                die "Cannot calculate patch ID: $patch"
-            fi
-
-            applied_commit=$(awk -v expected="$patch_id" \
-                '$1 == expected { print $2; exit }' "$history_file")
-            if [[ -n "$applied_commit" ]]; then
-                printf 'skip:  %s (commit=%s)\n' "$(basename "$patch")" "$applied_commit"
-                ((skipped += 1))
-                continue
-            fi
-
-            printf 'apply: %s\n' "$(basename "$patch")"
-            if ! git -C "$source_repo" am --reject "$patch"; then
-                rm -f -- "$history_file"
-                PATCH_HISTORY_TMP=""
-                die "Patch failed in $project; Git am state was preserved for diagnosis"
-            fi
-            printf '%s %s\n' "$patch_id" "$(git -C "$source_repo" rev-parse HEAD)" \
-                >>"$history_file"
-            ((applied += 1))
-        done < <(find "$patch_directory" -maxdepth 1 -type f -name '*.patch' | sort)
-
-        rm -f -- "$history_file"
-        PATCH_HISTORY_TMP=""
     done < <(find "$patch_root" -type f -name '*.patch' -printf '%h\n' | sort -u)
 
-    log "Patch state ready: applied=$applied skipped=$skipped"
+    return "$failed"
+}
+
+abort_redroid_patch_operations() {
+    local patch_root
+    local patch_directory
+    local project
+    local source_repo
+    local git_dir
+    local failed=0
+
+    patch_root=$(redroid_patch_root)
+    while IFS= read -r patch_directory; do
+        project=${patch_directory#"$patch_root"/}
+        source_repo="$AOSP_DIR/$project"
+        [[ -d "$source_repo/.git" ]] || continue
+        git_dir=$(git -C "$source_repo" rev-parse --absolute-git-dir)
+
+        if [[ -f "$git_dir/rebase-apply/applying" ]]; then
+            warn "Abort unfinished ReDroid git am operation: $project"
+            git -C "$source_repo" am --abort || failed=1
+        elif [[ -d "$git_dir/rebase-apply" || -d "$git_dir/rebase-merge" ]]; then
+            warn "Abort unfinished ReDroid rebase operation: $project"
+            git -C "$source_repo" rebase --abort || failed=1
+        fi
+    done < <(find "$patch_root" -type f -name '*.patch' -printf '%h\n' | sort -u)
+
+    PATCH_APPLICATION_ACTIVE=0
+    return "$failed"
+}
+
+apply_redroid_patches() {
+    local apply_script="$PATCH_DIR/apply-patch.sh"
+    local verify_script="$PATCH_DIR/verify-patch-state.sh"
+
+    [[ -x "$apply_script" ]] || die "Patch application script not found: $apply_script"
+    [[ -x "$verify_script" ]] || die "Patch verification script not found: $verify_script"
+    redroid_patch_operations_clean ||
+        die "Clean unfinished Git operations before applying ReDroid patches"
+
+    log "Apply complete ReDroid patch set after source sync"
+    PATCH_APPLICATION_ACTIVE=1
+    run "$apply_script" "$AOSP_DIR"
+
+    if ! redroid_patch_operations_clean; then
+        abort_redroid_patch_operations || true
+        die "ReDroid patch application left unfinished Git operations"
+    fi
+
+    # apply-patch.sh reports individual project errors without propagating a
+    # nonzero status, so verification is mandatory before starting the build.
+    log "Verify ReDroid patch state"
+    if ! PATCH_HISTORY_DEPTH="$PATCH_HISTORY_DEPTH" \
+        "$verify_script" "$AOSP_DIR"; then
+        abort_redroid_patch_operations || true
+        die "ReDroid patch verification failed"
+    fi
+    PATCH_APPLICATION_ACTIVE=0
 }
 
 #####################
@@ -656,7 +658,7 @@ main() {
         sync_sources
     fi
     if ((!SKIP_PATCHES)); then
-        apply_missing_patches
+        apply_redroid_patches
     fi
     if ((!SKIP_BUILD)); then
         build_android
