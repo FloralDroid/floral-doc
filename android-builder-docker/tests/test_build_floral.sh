@@ -76,6 +76,21 @@ fi
 [[ "$(git -C "$SOURCE_REPO" rev-parse HEAD)" == "$CONFLICT_HEAD" ]] ||
     die "Patch cleanup changed the pre-application commit"
 
+REMOVE_LOG="$TEST_ROOT/remove-container"
+(
+    container_exists() {
+        return 0
+    }
+    docker() {
+        printf '%s\n' "$*" >"$REMOVE_LOG"
+    }
+    BUILDER_STARTED=1
+    remove_failed_builder_container
+    [[ "$BUILDER_STARTED" == "0" ]] || die "Builder state was not cleared"
+)
+[[ "$(cat "$REMOVE_LOG")" == "rm --force $BUILDER_CONTAINER" ]] ||
+    die "Failed builder container was not forcibly removed"
+
 mkdir -p "$ENVSETUP_ROOT/build"
 cat >"$ENVSETUP_ROOT/build/envsetup.sh" <<'EOF'
 printf '%s:%s\n' "$TOP" "$ZSH_VERSION" >envsetup-values

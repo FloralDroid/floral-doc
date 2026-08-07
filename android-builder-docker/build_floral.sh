@@ -86,6 +86,9 @@ Options:
   --keep-builder-container    Keep the builder container after a successful build
   -h, --help                  Show this help
 
+Failed build containers are removed automatically. The builder image, bound
+AOSP source tree, incremental output, and host build log are retained.
+
 Configuration is provided through the environment variables declared at the
 top of this script. Common overrides include AOSP_DIR, JOBS, LUNCH_TARGET,
 BUILDER_IMAGE, RUNTIME_IMAGE, RUNTIME_PLATFORM, BUILD_LOG, and EXPORT_FILE.
@@ -125,6 +128,20 @@ container_exists() {
 
 container_state() {
     docker container inspect --format '{{.State.Status}}' "$BUILDER_CONTAINER"
+}
+
+remove_failed_builder_container() {
+    if ! container_exists; then
+        BUILDER_STARTED=0
+        return
+    fi
+
+    warn "Remove failed builder container: $BUILDER_CONTAINER"
+    if ! docker rm --force "$BUILDER_CONTAINER" >/dev/null; then
+        warn "Cannot remove failed builder container: $BUILDER_CONTAINER"
+        return 1
+    fi
+    BUILDER_STARTED=0
 }
 
 unmount_images() {
@@ -169,11 +186,11 @@ cleanup() {
     if [[ -n "$CHECKSUM_TMP" && -f "$CHECKSUM_TMP" ]]; then
         rm -f -- "$CHECKSUM_TMP"
     fi
-    if ((rc != 0 && BUILDER_STARTED)) && container_exists; then
-        warn "Builder container preserved for diagnosis: $BUILDER_CONTAINER"
-        printf '  docker logs %q\n' "$BUILDER_CONTAINER" >&2
-        printf '  docker exec -it %q /bin/bash\n' "$BUILDER_CONTAINER" >&2
-        printf '  build log: %s\n' "$BUILD_LOG" >&2
+    if ((rc != 0 && BUILDER_STARTED)); then
+        remove_failed_builder_container || true
+        if [[ -f "$BUILD_LOG" ]]; then
+            printf '  build log: %s\n' "$BUILD_LOG" >&2
+        fi
     fi
 
     exit "$rc"
@@ -538,7 +555,7 @@ build_android() {
     fi
     if ((build_rc != 0)); then
         report_builder_failure "$build_rc"
-        die "Android build failed; builder container was preserved"
+        die "Android build failed; see the host build log"
     fi
 
     if ((KEEP_BUILDER_CONTAINER)); then
