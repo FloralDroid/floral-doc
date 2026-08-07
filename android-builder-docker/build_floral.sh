@@ -485,11 +485,24 @@ report_builder_failure() {
         "container_exit_code=$container_exit_code oom_killed=$oom_killed error=$error"
 }
 
+android_build_script() {
+    local lunch_target_q
+
+    printf -v lunch_target_q '%q' "$LUNCH_TARGET"
+
+    # Android 12 envsetup reads optional variables such as TOP and ZSH_VERSION.
+    # Keep nounset disabled only in the shell that sources the AOSP environment.
+    printf '%s\n' \
+        'set -Ee -o pipefail' \
+        'source build/envsetup.sh' \
+        "lunch $lunch_target_q" \
+        "m -j$JOBS"
+}
+
 build_android() {
     local builder_user
     local passwd_entry
     local builder_home
-    local lunch_target_q
     local build_script
     local build_rc
 
@@ -504,11 +517,7 @@ build_android() {
     builder_home=$(cut -d: -f6 <<<"$passwd_entry")
     [[ -n "$builder_home" ]] || die "Cannot determine home directory for $builder_user"
 
-    printf -v lunch_target_q '%q' "$LUNCH_TARGET"
-    build_script="set -Eeuo pipefail
-source build/envsetup.sh
-lunch $lunch_target_q
-m -j$JOBS"
+    build_script=$(android_build_script)
 
     log "Build $LUNCH_TARGET in $BUILDER_CONTAINER (jobs=$JOBS)"
     printf 'Build log: %s\n' "$BUILD_LOG"

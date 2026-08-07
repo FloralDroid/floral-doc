@@ -20,6 +20,7 @@ PATCH_DIR="$TEST_ROOT/redroid-patches"
 PATCH_HISTORY_DEPTH=32
 SOURCE_REPO="$AOSP_DIR/system/core"
 PATCH_ROOT="$PATCH_DIR/android-test/system/core"
+ENVSETUP_ROOT="$TEST_ROOT/envsetup"
 
 mkdir -p "$SOURCE_REPO" "$PATCH_ROOT"
 git -C "$SOURCE_REPO" init --quiet
@@ -49,4 +50,26 @@ SECOND_HEAD=$(git -C "$SOURCE_REPO" rev-parse HEAD)
 [[ "$(git -C "$SOURCE_REPO" rev-list --count HEAD)" == "2" ]] ||
     die "Unexpected commit count after the idempotence test"
 
-printf '\nPASS: missing patch applied once and existing patch skipped\n'
+mkdir -p "$ENVSETUP_ROOT/build"
+cat >"$ENVSETUP_ROOT/build/envsetup.sh" <<'EOF'
+printf '%s:%s\n' "$TOP" "$ZSH_VERSION" >envsetup-values
+lunch() {
+    printf 'lunch=%s\n' "$1" >>envsetup-values
+}
+m() {
+    printf 'm=%s\n' "$1" >>envsetup-values
+}
+EOF
+
+BUILD_COMMAND=$(android_build_script)
+(
+    unset TOP ZSH_VERSION
+    cd "$ENVSETUP_ROOT"
+    /bin/bash -lc "$BUILD_COMMAND"
+)
+[[ "$(sed -n '2p' "$ENVSETUP_ROOT/envsetup-values")" == "lunch=$LUNCH_TARGET" ]] ||
+    die "Generated build command did not run lunch"
+[[ "$(sed -n '3p' "$ENVSETUP_ROOT/envsetup-values")" == "m=-j$JOBS" ]] ||
+    die "Generated build command did not run m"
+
+printf '\nPASS: patch idempotence and AOSP envsetup compatibility verified\n'
