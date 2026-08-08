@@ -28,6 +28,10 @@ git clone "$LOCAL_MANIFEST_URL" ~/floral/.repo/local_manifests -b 12.0.0
 # sync code
 repo sync -c -j$(nproc)
 
+# Apply the matching FloralDroid patches after every clean source sync.
+git clone https://github.com/FloralDroid/redroid-patches.git ~/redroid-patches
+~/redroid-patches/apply-patch.sh ~/floral
+
 #####################
 # create builder
 #####################
@@ -66,17 +70,20 @@ lunch redroid_x86_64-userdebug
 m
 
 #####################
-# create redroid image in *HOST*
+# create floral image in *HOST*
 #####################
 cd ~/floral/out/target/product/redroid_x86_64
 
 sudo mount system.img system -o ro
 sudo mount vendor.img vendor -o ro
-sudo tar --xattrs -c vendor -C system --exclude="./vendor" . | docker import -c 'ENTRYPOINT ["/init", "androidboot.hardware=redroid"]' - redroid
+sudo tar --xattrs -c vendor -C system --exclude="./vendor" . | docker import -c 'ENTRYPOINT ["/init", "androidboot.hardware=floral"]' - floral:12.0.0
 sudo umount system vendor
 
 # create rootfs only image for develop purpose
-tar --xattrs -c -C root . | docker import -c 'ENTRYPOINT ["/init", "androidboot.hardware=redroid"]' - redroid-dev
+tar --xattrs -c -C root . | docker import -c 'ENTRYPOINT ["/init", "androidboot.hardware=floral"]' - floral-dev
+
+# Optional: export the finished image for another host.
+docker save floral:12.0.0 | gzip -1 > ~/floral-12.0.0.tar.gz
 ```
 
 `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` are inherited by `repo`, Git, and
@@ -115,4 +122,4 @@ This is not different from the normal building process, except for some small th
 
   Resync the repo with a new `repo sync -c` and continue following the building guide exactly as before.
 
-- OPTIONAL but recommended. While importing the image, change the entrypoint to 'ENTRYPOINT ["/init", "androidboot.hardware=redroid", "ro.setupwizard.mode=DISABLED"]' , so you avoid doing it manually at every container start, or if you want set `ro.setupwizard.mode=DISABLED` at container start, skipping the GApps setup wizard at redroid boot.
+- OPTIONAL but recommended. While importing the image, change the entrypoint to 'ENTRYPOINT ["/init", "androidboot.hardware=floral", "ro.setupwizard.mode=DISABLED"]' , so you avoid doing it manually at every container start, or if you want set `ro.setupwizard.mode=DISABLED` at container start, skipping the GApps setup wizard at redroid boot.
