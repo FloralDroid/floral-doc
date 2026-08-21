@@ -29,7 +29,8 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     && echo "install utils" \
     && apt-get install -y sudo rsync procps \
     && echo "install packages for build mesa3d or meson related" \
-    && apt-get install -y python3 python3-mako meson pkg-config python3-dev ninja-build gettext \
+    && apt-get install -y python3 python-is-python3 python3-mako meson pkg-config python3-dev ninja-build gettext \
+    && python -c 'import mako.template' \
     && rm -rf /var/lib/apt/lists/*
 
 # A root host commonly invokes Docker in CI. Reuse the container root account

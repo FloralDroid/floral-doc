@@ -270,31 +270,18 @@ validate_configuration() {
 # Source synchronization
 #####################
 
-ensure_no_tracked_changes() {
-    local repo_dir=$1
-    local label=$2
-    local status
-
-    status=$(git -C "$repo_dir" status --porcelain --untracked-files=no)
-    [[ -z "$status" ]] || die "$label contains tracked local changes: $repo_dir"
-}
-
 update_checkout() {
     local directory=$1
     local url=$2
     local branch=$3
-    local label=$4
 
     if [[ -d "$directory/.git" ]]; then
-        ensure_no_tracked_changes "$directory" "$label"
+        # These checkouts are build inputs. Reset them so force-pushed branches
+        # and files left by a previous failed run cannot affect the next sync.
         run git -C "$directory" fetch --prune origin "$branch"
-
-        if git -C "$directory" show-ref --verify --quiet "refs/heads/$branch"; then
-            run git -C "$directory" checkout "$branch"
-        else
-            run git -C "$directory" checkout --track -b "$branch" "origin/$branch"
-        fi
-        run git -C "$directory" merge --ff-only "origin/$branch"
+        run git -C "$directory" checkout -B "$branch" "origin/$branch"
+        run git -C "$directory" reset --hard "origin/$branch"
+        run git -C "$directory" clean -fdx
     elif [[ -e "$directory" ]]; then
         die "$directory exists but is not a Git repository"
     else
@@ -305,16 +292,19 @@ update_checkout() {
 sync_sources() {
     log "Update FloralDroid local manifests"
     update_checkout "$LOCAL_MANIFEST_DIR" "$LOCAL_MANIFEST_URL" \
-        "$LOCAL_MANIFEST_BRANCH" "Local manifest repository"
+        "$LOCAL_MANIFEST_BRANCH"
 
     log "Sync AOSP and FloralDroid sources (jobs=$JOBS)"
     (
         cd "$AOSP_DIR"
-        run "${REPO[@]}" sync -c -j"$JOBS"
+        # Patch application creates local commits. Remove those commits and
+        # generated files before syncing back to the manifest revisions.
+        run "${REPO[@]}" forall -c 'git reset --hard && git clean -fdx'
+        run "${REPO[@]}" sync -c -d --force-sync -j"$JOBS"
     )
 
     log "Update ReDroid patch repository"
-    update_checkout "$PATCH_DIR" "$PATCH_URL" "$PATCH_BRANCH" "Patch repository"
+    update_checkout "$PATCH_DIR" "$PATCH_URL" "$PATCH_BRANCH"
 }
 
 #####################
@@ -515,6 +505,9 @@ android_build_script() {
         'set -Ee -o pipefail' \
         'source build/envsetup.sh' \
         "lunch $lunch_target_q" \
+        'unset PYTHONHOME' \
+        'export PYTHONPATH=/usr/lib/python3/dist-packages:/src/development/python-packages' \
+        'python3 -c "import mako.template"' \
         "m -j$JOBS"
 }
 
@@ -535,6 +528,14 @@ build_android() {
     [[ -n "$passwd_entry" ]] || die "Builder user is missing from /etc/passwd: $builder_user"
     builder_home=$(cut -d: -f6 <<<"$passwd_entry")
     [[ -n "$builder_home" ]] || die "Cannot determine home directory for $builder_user"
+
+    log "Verify builder Python dependencies"
+    run docker exec \
+        --user "$builder_user" \
+        --env "HOME=$builder_home" \
+        --env "USER=$builder_user" \
+        "$BUILDER_CONTAINER" \
+        python -c 'import mako.template'
 
     build_script=$(android_build_script)
 
