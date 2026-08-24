@@ -23,9 +23,10 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     fi \
     && apt-get update \
     && echo "install package for building AOSP" \
-    && apt-get install -y git-core gnupg flex bison build-essential zip curl zlib1g-dev \
+    && apt-get install -y git-core gnupg openssl flex bison build-essential zip curl zlib1g-dev \
         gcc-multilib g++-multilib libc6-dev-i386 libncurses-dev x11proto-dev \
         libx11-dev lib32z1-dev libgl1-mesa-dev libxml2-utils xsltproc unzip fontconfig \
+        openjdk-21-jre \
     && echo "install utils" \
     && apt-get install -y sudo rsync procps \
     && echo "install packages for build mesa3d or meson related" \
@@ -47,7 +48,7 @@ RUN if [ "$userid" = "0" ]; then \
     fi
 
 ENV USER=$username \
-    PATH=/src/.repo/repo:/src/prebuilts/jdk/jdk8/linux-x86/bin/:$PATH
+    PATH=/src/.repo/repo:/src/prebuilts/jdk/jdk11/linux-x86/bin/:$PATH
 
 COPY builder-entrypoint.sh /usr/local/sbin/floral-builder-entrypoint
 

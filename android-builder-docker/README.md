@@ -86,6 +86,51 @@ tar --xattrs -c -C root . | docker import -c 'ENTRYPOINT ["/init", "androidboot.
 docker save floral:12.0.0 | gzip -1 > ~/floral-12.0.0.tar.gz
 ```
 
+## Release signing
+
+Run the host wrapper for a production-style signed build instead of invoking
+`m` directly:
+
+```bash
+printf '%s\n' 'choose-a-long-password' > ~/.floral-release-password
+chmod 0600 ~/.floral-release-password
+RELEASE_KEY_PASSWORD_FILE=~/.floral-release-password \
+  ./android-builder-docker/build_floral.sh --release
+```
+
+`--release` selects `${PRODUCT_NAME}-user`, builds `target-files-package` and
+`otatools-package`, then signs the result inside the builder container. The
+first run creates encrypted `releasekey`, `platform`, `shared`, `media`, and
+`networkstack` keys under `~/.floral/release-keys`; existing pairs are never
+overwritten. Do not use the example password for a real release.
+
+If the target-files build already completed but signing failed, rebuild the
+builder image after Dockerfile changes and sign the existing package without
+running AOSP compilation again:
+
+```bash
+RELEASE_KEY_PASSWORD_FILE=~/.floral-release-password \
+  ./android-builder-docker/build_floral.sh --sign-existing
+```
+
+`--sign-existing` reuses the newest target-files package under `out/`, uses
+JDK 21 only for `signapk.jar` compatibility with PBES2 keys, and writes the
+same signed artifacts as `--release`.
+
+Signed artifacts are written below `out/release/${PRODUCT_NAME}/`:
+
+```text
+signed-target_files.zip
+signed-img.zip
+images/system.img
+images/vendor.img
+```
+
+The current Redroid product disables `PRODUCT_BUILD_VBMETA_IMAGE`, so this
+signs APKs, APEXes, OTA metadata, and generated images but does not create a
+hardware-backed AVB/vbmeta trust chain. The release variant is `user`, so
+`adb root` and other debug-only features are unavailable.
+
 `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` are inherited by `repo`, Git, and
 the Docker build only when configured. Proxy credentials are passed as Docker's
 predefined proxy build arguments and are not added to the Dockerfile.

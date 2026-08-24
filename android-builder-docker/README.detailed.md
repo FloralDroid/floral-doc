@@ -146,6 +146,25 @@ m -j$(nproc)
 
 exit
 ```
+For a signed production-style build, use the host wrapper instead of invoking
+`m` directly:
+
+```bash
+printf '%s\n' 'choose-a-long-password' > ~/.floral-release-password
+chmod 0600 ~/.floral-release-password
+RELEASE_KEY_PASSWORD_FILE=~/.floral-release-password \
+  ./android-builder-docker/build_floral.sh --release
+```
+
+The wrapper selects the `user` variant, generates or verifies encrypted
+`releasekey`, `platform`, `shared`, `media`, and `networkstack` keys under
+`~/.floral/release-keys`, then signs target-files and creates signed images.
+Private keys are not stored in the source tree. Do not use the example password
+for a real release.
+
+The current Redroid product disables `PRODUCT_BUILD_VBMETA_IMAGE`, so this
+provides release APK/APEX/OTA signatures but not a complete AVB/vbmeta chain.
+
 #### 6) Create Redroid image in *HOST*
 ```
 cd ~/redroid/out/target/product/redroid_arm64

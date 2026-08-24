@@ -18,12 +18,15 @@ trap cleanup_test EXIT
 AOSP_DIR="$TEST_ROOT/aosp"
 PATCH_DIR="$TEST_ROOT/redroid-patches"
 PATCH_HISTORY_DEPTH=32
+PRODUCT_DIR="$AOSP_DIR/out/target/product/redroid_x86_64"
 ENVSETUP_ROOT="$TEST_ROOT/envsetup"
+FAKE_BIN="$TEST_ROOT/bin"
 SOURCE_REPO="$AOSP_DIR/system/core"
 PATCH_ROOT="$PATCH_DIR/android-test/system/core"
 PATCH_FLOW="$AOSP_DIR/patch-flow"
 
 mkdir -p "$AOSP_DIR/.repo/manifests" "$SOURCE_REPO" "$PATCH_ROOT"
+mkdir -p "$FAKE_BIN"
 git -C "$SOURCE_REPO" init --quiet
 git -C "$SOURCE_REPO" config user.name "Floral Build Test"
 git -C "$SOURCE_REPO" config user.email "build-test@floraldroid.invalid"
@@ -102,15 +105,73 @@ m() {
 }
 EOF
 
+cat >"$FAKE_BIN/python3" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod 0755 "$FAKE_BIN/python3"
+
 BUILD_COMMAND=$(android_build_script)
 (
     unset TOP ZSH_VERSION
     cd "$ENVSETUP_ROOT"
-    /bin/bash -lc "$BUILD_COMMAND"
+    PATH="$FAKE_BIN:$PATH" /bin/bash -c "$BUILD_COMMAND"
 )
 [[ "$(sed -n '2p' "$ENVSETUP_ROOT/envsetup-values")" == "lunch=$LUNCH_TARGET" ]] ||
     die "Generated build command did not run lunch"
 [[ "$(sed -n '3p' "$ENVSETUP_ROOT/envsetup-values")" == "m=-j$JOBS" ]] ||
     die "Generated build command did not run m"
 
-printf '\nPASS: patch flow and AOSP envsetup compatibility verified\n'
+SIGN_EXISTING=0
+RELEASE_BUILD=0
+SKIP_SYNC=0
+SKIP_PATCHES=0
+SKIP_IMPORT=0
+SKIP_EXPORT=0
+parse_args --sign-existing
+[[ "$SIGN_EXISTING" == 1 && "$RELEASE_BUILD" == 1 && "$SKIP_BUILD" == 0 ]] ||
+    die "Sign-existing mode did not select release signing without a build skip"
+[[ "$SKIP_SYNC" == 1 && "$SKIP_PATCHES" == 1 &&
+    "$SKIP_IMPORT" == 1 && "$SKIP_EXPORT" == 1 ]] ||
+    die "Sign-existing mode did not disable unrelated pipeline stages"
+
+RELEASE_BUILD=1
+SIGN_EXISTING=0
+RELEASE_LUNCH_TARGET=redroid_x86_64-user
+RELEASE_KEY_DIR="$TEST_ROOT/release-keys"
+RELEASE_OUTPUT_DIR="$TEST_ROOT/release-output"
+RELEASE_KEY_PASSWORD_FILE="$TEST_ROOT/release-password"
+printf 'test-release-password\n' >"$RELEASE_KEY_PASSWORD_FILE"
+chmod 0600 "$RELEASE_KEY_PASSWORD_FILE"
+configure_release
+[[ "$LUNCH_TARGET" == "$RELEASE_LUNCH_TARGET" ]] ||
+    die "Release mode did not select the user lunch target"
+RELEASE_BUILD_COMMAND=$(android_build_script)
+printf '%s\n' "$RELEASE_BUILD_COMMAND" | rg -q 'target-files-package otatools-package' ||
+    die "Release build did not request target-files and OTA tools"
+RELEASE_KEY_SCRIPT=$(release_key_generation_script)
+printf '%s\n' "$RELEASE_KEY_SCRIPT" | bash -n
+printf '%s\n' "$RELEASE_KEY_SCRIPT" | rg -q 'floral-release-password' ||
+    die "Release key generation did not use the mounted password secret"
+RELEASE_SIGNING_SCRIPT=$(release_signing_script)
+printf '%s\n' "$RELEASE_SIGNING_SCRIPT" | bash -n
+printf '%s\n' "$RELEASE_SIGNING_SCRIPT" | rg -q 'sign_target_files_apks' ||
+    die "Release signing command was not generated"
+printf '%s\n' "$RELEASE_SIGNING_SCRIPT" |
+    rg -q 'export PATH=/usr/lib/jvm/java-21-openjdk-amd64/bin:' ||
+    die "Release signing command did not restore the AOSP JDK PATH"
+printf '%s\n' "$RELEASE_SIGNING_SCRIPT" |
+    rg -q '/src/out/soong/host/linux-x86/bin:' ||
+    die "Release signing command did not restore the Soong host tools PATH"
+printf '%s\n' "$RELEASE_SIGNING_SCRIPT" | rg -q -- '--extra_apks' ||
+    die "Release APEX container key override was not generated"
+
+prepare_release_password
+[[ -f "$RELEASE_PASSWORD_TMP" ]] || die "Release password secret was not created"
+[[ "$(stat -c '%a' "$RELEASE_PASSWORD_TMP")" == "600" ]] ||
+    die "Release password secret has unsafe permissions"
+[[ "$(<"$RELEASE_PASSWORD_TMP")" == "test-release-password" ]] ||
+    die "Release password secret contents changed"
+clear_release_password
+
+printf '\nPASS: patch flow, release signing flow, and AOSP envsetup compatibility verified\n'
