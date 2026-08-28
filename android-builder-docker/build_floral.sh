@@ -365,6 +365,10 @@ validate_configuration() {
             die "Builder image not found: $BUILDER_IMAGE"
     fi
 
+    if ((!SKIP_BUILD || !SKIP_IMPORT)); then
+        need_cmd readelf
+    fi
+
     if ((!SKIP_IMPORT)); then
         need_cmd mount
         need_cmd mountpoint
@@ -747,6 +751,59 @@ android_build_script() {
         "m -j$JOBS$build_goal"
 }
 
+validate_guest_userspace() {
+    local product_dir=${1:-$PRODUCT_DIR}
+    local guest_file
+    local elf_header
+    local elf_notes
+    local guest_libc
+    local guest_files=(
+        "$product_dir/system/lib64/arm64/libc.so"
+        "$product_dir/system/bin/arm64/app_process64"
+        "$product_dir/system/bin/arm64/linker64"
+    )
+    local guest_api_files=(
+        "$product_dir/system/lib64/arm64/libc.so"
+        "$product_dir/system/bin/arm64/app_process64"
+    )
+
+    for guest_file in "${guest_files[@]}"; do
+        [[ -f "$guest_file" ]] || {
+            printf 'Missing AOSP ARM64 guest file: %s\n' "$guest_file" >&2
+            return 1
+        }
+        elf_header=$(LC_ALL=C readelf --file-header "$guest_file")
+        [[ "$elf_header" == *"Machine:"*"AArch64"* ]] || {
+            printf 'AOSP guest file is not AArch64 ELF: %s\n' "$guest_file" >&2
+            return 1
+        }
+    done
+
+    # The platform linker is built with linker_bin_template's nocrt=true and
+    # therefore does not carry the crtbrand Android API note.
+    for guest_file in "${guest_api_files[@]}"; do
+        elf_notes=$(LC_ALL=C readelf --notes "$guest_file")
+        [[ "$elf_notes" == *"description data: 1f 00 00 00"* ]] || {
+            printf 'AOSP guest file is not Android API 31: %s\n' "$guest_file" >&2
+            return 1
+        }
+    done
+
+    guest_libc=${guest_files[0]}
+    LC_ALL=C readelf --dyn-syms --wide "$guest_libc" | awk '
+        $5 == "GLOBAL" && $6 == "DEFAULT" {
+            name = $8
+            sub(/@.*/, "", name)
+            if (name == "__clone_for_fork") found = 1
+        }
+        END { exit found ? 0 : 1 }
+    ' || {
+        printf 'AOSP ARM64 guest libc does not export __clone_for_fork: %s\n' \
+            "$guest_libc" >&2
+        return 1
+    }
+}
+
 release_key_generation_script() {
     local subject_q
 
@@ -990,6 +1047,9 @@ build_android() {
         fi
     fi
 
+    log "Validate AOSP ARM64 guest userspace"
+    validate_guest_userspace
+
     if ((RELEASE_BUILD)); then
         sign_release_target_files "$builder_user" "$builder_home"
     fi
@@ -1126,6 +1186,10 @@ main() {
         build_android
     fi
     if ((!SKIP_IMPORT)); then
+        if ((SKIP_BUILD)); then
+            log "Validate reused AOSP ARM64 guest userspace"
+            validate_guest_userspace
+        fi
         import_runtime_image
     fi
     if ((!SKIP_EXPORT)); then

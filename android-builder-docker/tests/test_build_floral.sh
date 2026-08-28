@@ -122,6 +122,33 @@ BUILD_COMMAND=$(android_build_script)
 [[ "$(sed -n '3p' "$ENVSETUP_ROOT/envsetup-values")" == "m=-j$JOBS" ]] ||
     die "Generated build command did not run m"
 
+mkdir -p "$PRODUCT_DIR/system/lib64/arm64" "$PRODUCT_DIR/system/bin/arm64"
+touch "$PRODUCT_DIR/system/lib64/arm64/libc.so"
+touch "$PRODUCT_DIR/system/bin/arm64/app_process64"
+touch "$PRODUCT_DIR/system/bin/arm64/linker64"
+cat >"$FAKE_BIN/readelf" <<'EOF'
+#!/usr/bin/env bash
+case "$1" in
+    --file-header) printf '  Machine: AArch64\n' ;;
+    --notes)
+        fake_api=${FAKE_API:-1f}
+        if [[ "${2##*/}" == linker64 && -n "${FAKE_LINKER_API:-}" ]]; then
+            fake_api=$FAKE_LINKER_API
+        fi
+        printf '   description data: %s 00 00 00 \n' "$fake_api"
+        ;;
+    --dyn-syms)
+        printf '85: 000000000003fc90 8 FUNC GLOBAL DEFAULT 15 __clone_for_fork@@LIBC_PRIVATE\n'
+        ;;
+esac
+EOF
+chmod 0755 "$FAKE_BIN/readelf"
+PATH="$FAKE_BIN:$PATH" validate_guest_userspace
+if FAKE_API=20 PATH="$FAKE_BIN:$PATH" validate_guest_userspace 2>/dev/null; then
+    die "Guest validation accepted an Android API 32 payload"
+fi
+FAKE_LINKER_API=20 PATH="$FAKE_BIN:$PATH" validate_guest_userspace
+
 SIGN_EXISTING=0
 RELEASE_BUILD=0
 SKIP_SYNC=0
