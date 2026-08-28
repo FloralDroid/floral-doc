@@ -556,11 +556,19 @@ prepare_builder_container() {
         fi
     done
     docker_args+=("$BUILDER_IMAGE")
+    # Keep PID 1 alive without relying on detached stdin. The entrypoint
+    # forwards this command after completing its host compatibility setup.
+    docker_args+=(
+        /bin/bash
+        -i
+        -c
+        'while :; do sleep 3600; done'
+    )
     run "${docker_args[@]}"
     BUILDER_STARTED=1
 
     # The current builder entrypoint configures compatibility libraries and
-    # then replaces PID 1 with the unprivileged interactive shell.
+    # then keeps PID 1 alive for docker exec build commands.
     for ((attempt = 1; attempt <= 30; ++attempt)); do
         state=$(container_state 2>/dev/null || true)
         [[ "$state" == "running" ]] ||

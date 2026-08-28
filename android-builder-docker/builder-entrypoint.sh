@@ -31,4 +31,8 @@ export USER="${builder_user}"
 export HOME
 HOME=$(getent passwd "${builder_user}" | cut -d: -f6)
 
+if (($#)); then
+    exec chroot --userspec="${builder_user}" / "$@"
+fi
+
 exec chroot --userspec="${builder_user}" / /bin/bash -i

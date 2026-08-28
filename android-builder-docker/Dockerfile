@@ -30,7 +30,7 @@ RUN if [ -n "${APT_MIRROR}" ]; then \
     && echo "install utils" \
     && apt-get install -y sudo rsync procps \
     && echo "install packages for build mesa3d or meson related" \
-    && apt-get install -y python3 python-is-python3 python3-mako meson pkg-config python3-dev ninja-build gettext llvm-17 \
+    && apt-get install -y python3 python-is-python3 python3-mako meson pkg-config python3-dev ninja-build gettext llvm-17 nasm \
     && python -c 'import mako.template' \
     && rm -rf /var/lib/apt/lists/*
 
@@ -47,7 +47,8 @@ RUN if [ "$userid" = "0" ]; then \
         && echo "$username" > /root/builder-user; \
     fi
 
-ENV USER=$username \
+ENV SOONG_NASM=/usr/bin/nasm \
+    USER=$username \
     PATH=/src/.repo/repo:/src/prebuilts/jdk/jdk11/linux-x86/bin/:$PATH
 
 COPY builder-entrypoint.sh /usr/local/sbin/floral-builder-entrypoint
