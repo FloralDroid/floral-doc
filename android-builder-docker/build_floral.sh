@@ -46,6 +46,9 @@ KEEP_BUILDER_CONTAINER=0
 RELEASE_BUILD=0
 SIGN_EXISTING=0
 
+CHECKOUT_UPDATED=0
+PATCHES_REUSED=0
+
 #####################
 # State and helpers
 #####################
@@ -382,27 +385,138 @@ update_checkout() {
     local directory=$1
     local url=$2
     local branch=$3
+    local old_head
+    local new_head
+    local local_changes=0
+
+    CHECKOUT_UPDATED=0
 
     if [[ -d "$directory/.git" ]]; then
-        # These checkouts are build inputs. Reset them so force-pushed branches
-        # and files left by a previous failed run cannot affect the next sync.
+        old_head=$(git -C "$directory" rev-parse HEAD)
+        [[ -z "$(git -C "$directory" status --porcelain)" ]] || local_changes=1
         run git -C "$directory" fetch --prune origin "$branch"
-        run git -C "$directory" checkout -B "$branch" "origin/$branch"
-        run git -C "$directory" reset --hard "origin/$branch"
-        run git -C "$directory" clean -fdx
+        new_head=$(git -C "$directory" rev-parse "origin/$branch")
+        if ((local_changes)) || [[ "$old_head" != "$new_head" ]]; then
+            # These checkouts are build inputs. Reset them only when the input
+            # revision changed or a previous run left local state behind.
+            run git -C "$directory" checkout -B "$branch" "origin/$branch"
+            run git -C "$directory" reset --hard "origin/$branch"
+            run git -C "$directory" clean -fdx
+            CHECKOUT_UPDATED=1
+        else
+            log "Checkout unchanged: $directory"
+        fi
     elif [[ -e "$directory" ]]; then
         die "$directory exists but is not a Git repository"
     else
         run git clone --branch "$branch" --single-branch "$url" "$directory"
+        CHECKOUT_UPDATED=1
     fi
 }
 
+repo_input_fingerprint() {
+    local manifest_output
+    local project_output
+    local manifest_refs
+    local manifest_hash
+    local project_hash
+    local manifest_refs_hash
+
+    manifest_output=$(
+        cd "$AOSP_DIR"
+        "${REPO[@]}" manifest
+    ) || return 1
+    project_output=$(
+        cd "$AOSP_DIR"
+        "${REPO[@]}" forall --ignore-missing -e -c '
+            test -n "$REPO_LREV" || exit 1
+            printf "%s\t%s\t%s\n" "$REPO_PROJECT" "$REPO_RREV" "$REPO_LREV"
+        ' | LC_ALL=C sort
+    ) || return 1
+    manifest_refs=$(git -C "$AOSP_DIR/.repo/manifests" \
+        for-each-ref --format='%(refname) %(objectname)' \
+        refs/heads refs/remotes | LC_ALL=C sort) || return 1
+
+    manifest_hash=$(printf '%s\n' "$manifest_output" | git hash-object --stdin)
+    project_hash=$(printf '%s\n' "$project_output" | git hash-object --stdin)
+    manifest_refs_hash=$(printf '%s\n' "$manifest_refs" | git hash-object --stdin)
+    printf 'manifest=%s\nprojects=%s\nmanifest-refs=%s\n' \
+        "$manifest_hash" "$project_hash" "$manifest_refs_hash"
+}
+
+repo_has_tracked_changes() {
+    ! (
+        cd "$AOSP_DIR"
+        "${REPO[@]}" forall --ignore-missing -e -c 'git diff --quiet && git diff --cached --quiet'
+    )
+}
+
+verify_redroid_patches() {
+    local verify_script="$PATCH_DIR/verify-patch-state.sh"
+
+    [[ -x "$verify_script" ]] || return 1
+    redroid_patch_operations_clean || return 1
+    log "Verify ReDroid patch state"
+    PATCH_HISTORY_DEPTH="$PATCH_HISTORY_DEPTH" \
+        "$verify_script" "$AOSP_DIR"
+}
+
 sync_sources() {
+    local needs_sync=0
+    local before_fingerprint
+    local after_fingerprint
+
+    PATCHES_REUSED=0
+
     log "Update FloralDroid local manifests"
     update_checkout "$LOCAL_MANIFEST_DIR" "$LOCAL_MANIFEST_URL" \
         "$LOCAL_MANIFEST_BRANCH"
+    if ((CHECKOUT_UPDATED)); then
+        needs_sync=1
+    fi
 
-    log "Sync AOSP and FloralDroid sources (jobs=$JOBS)"
+    log "Update ReDroid patch repository"
+    update_checkout "$PATCH_DIR" "$PATCH_URL" "$PATCH_BRANCH"
+    if ((CHECKOUT_UPDATED)); then
+        needs_sync=1
+    fi
+
+    if ((!needs_sync)); then
+        log "Scan AOSP revisions without changing the working tree"
+        if ! before_fingerprint=$(repo_input_fingerprint); then
+            warn "Cannot fingerprint the current AOSP manifest; perform a full sync"
+            needs_sync=1
+        else
+            (
+                cd "$AOSP_DIR"
+                run "${REPO[@]}" sync -c --force-sync --network-only -j"$JOBS"
+            )
+            if ! after_fingerprint=$(repo_input_fingerprint); then
+                warn "Cannot fingerprint the fetched AOSP manifest; perform a full sync"
+                needs_sync=1
+            elif [[ "$before_fingerprint" != "$after_fingerprint" ]]; then
+                log "AOSP manifest or project revisions changed"
+                needs_sync=1
+            fi
+        fi
+    fi
+
+    if ((!needs_sync)) && repo_has_tracked_changes; then
+        warn "AOSP working tree has tracked changes; perform a clean sync"
+        needs_sync=1
+    fi
+
+    if ((!needs_sync)); then
+        if verify_redroid_patches; then
+            PATCHES_REUSED=1
+            log "AOSP and ReDroid inputs unchanged; skip reset, sync checkout, and patch application"
+            return
+        fi
+        warn "ReDroid patch state is incomplete; perform a clean sync and reapply patches"
+        needs_sync=1
+    fi
+
+    log "Sync AOSP and FloralDroid sources after input changes (jobs=$JOBS)"
     (
         cd "$AOSP_DIR"
         # Patch application creates local commits. Remove those commits and
@@ -410,9 +524,6 @@ sync_sources() {
         run "${REPO[@]}" forall -c 'git reset --hard && git clean -fdx'
         run "${REPO[@]}" sync -c -d --force-sync -j"$JOBS"
     )
-
-    log "Update ReDroid patch repository"
-    update_checkout "$PATCH_DIR" "$PATCH_URL" "$PATCH_BRANCH"
 }
 
 #####################
@@ -488,10 +599,10 @@ abort_redroid_patch_operations() {
 
 apply_redroid_patches() {
     local apply_script="$PATCH_DIR/apply-patch.sh"
-    local verify_script="$PATCH_DIR/verify-patch-state.sh"
 
     [[ -x "$apply_script" ]] || die "Patch application script not found: $apply_script"
-    [[ -x "$verify_script" ]] || die "Patch verification script not found: $verify_script"
+    [[ -x "$PATCH_DIR/verify-patch-state.sh" ]] ||
+        die "Patch verification script not found: $PATCH_DIR/verify-patch-state.sh"
     redroid_patch_operations_clean ||
         die "Clean unfinished Git operations before applying ReDroid patches"
 
@@ -506,9 +617,7 @@ apply_redroid_patches() {
 
     # apply-patch.sh reports individual project errors without propagating a
     # nonzero status, so verification is mandatory before starting the build.
-    log "Verify ReDroid patch state"
-    if ! PATCH_HISTORY_DEPTH="$PATCH_HISTORY_DEPTH" \
-        "$verify_script" "$AOSP_DIR"; then
+    if ! verify_redroid_patches; then
         abort_redroid_patch_operations || true
         die "ReDroid patch verification failed"
     fi
@@ -1004,7 +1113,11 @@ main() {
         sync_sources
     fi
     if ((!SKIP_PATCHES)); then
-        apply_redroid_patches
+        if ((PATCHES_REUSED)); then
+            log "Reuse verified ReDroid patch state"
+        else
+            apply_redroid_patches
+        fi
     fi
     if ((!SKIP_BUILD)); then
         if ((RELEASE_BUILD)); then

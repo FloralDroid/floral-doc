@@ -166,6 +166,52 @@ printf '%s\n' "$RELEASE_SIGNING_SCRIPT" |
 printf '%s\n' "$RELEASE_SIGNING_SCRIPT" | rg -q -- '--extra_apks' ||
     die "Release APEX container key override was not generated"
 
+CHECKOUT_REMOTE="$TEST_ROOT/checkout-remote.git"
+CHECKOUT_DIR="$TEST_ROOT/checkout"
+CHECKOUT_SEED="$TEST_ROOT/checkout-seed"
+git init --bare --initial-branch=main "$CHECKOUT_REMOTE" >/dev/null
+git clone --quiet "$CHECKOUT_REMOTE" "$CHECKOUT_SEED"
+git -C "$CHECKOUT_SEED" config user.name "Floral Build Test"
+git -C "$CHECKOUT_SEED" config user.email "build-test@floraldroid.invalid"
+printf 'one\n' >"$CHECKOUT_SEED/value"
+git -C "$CHECKOUT_SEED" add value
+git -C "$CHECKOUT_SEED" commit --quiet -m "one"
+git -C "$CHECKOUT_SEED" push --quiet origin HEAD:main
+update_checkout "$CHECKOUT_DIR" "$CHECKOUT_REMOTE" main
+update_checkout "$CHECKOUT_DIR" "$CHECKOUT_REMOTE" main
+[[ "$CHECKOUT_UPDATED" == 0 && "$(<"$CHECKOUT_DIR/value")" == one ]] ||
+    die "Unchanged checkout was reset"
+printf 'two\n' >"$CHECKOUT_SEED/value"
+git -C "$CHECKOUT_SEED" commit --quiet -am "two"
+git -C "$CHECKOUT_SEED" push --quiet origin HEAD:main
+update_checkout "$CHECKOUT_DIR" "$CHECKOUT_REMOTE" main
+[[ "$CHECKOUT_UPDATED" == 1 && "$(<"$CHECKOUT_DIR/value")" == two ]] ||
+    die "Changed checkout was not refreshed"
+
+SYNC_CWD_FILE="$TEST_ROOT/repo-sync-cwd"
+cat >"$FAKE_BIN/repo" <<EOF
+#!/usr/bin/env bash
+[[ "\$1" == sync ]] || exit 0
+shift
+for arg in "\$@"; do
+    [[ "\$arg" != -d ]] || exit 2
+done
+printf '%s\n' "\$PWD" >"$SYNC_CWD_FILE"
+EOF
+chmod 0755 "$FAKE_BIN/repo"
+(
+    REPO=("$FAKE_BIN/repo")
+    JOBS=1
+    update_checkout() { CHECKOUT_UPDATED=0; }
+    repo_input_fingerprint() { printf 'same-input\n'; }
+    repo_has_tracked_changes() { return 1; }
+    verify_redroid_patches() { return 0; }
+    sync_sources
+    [[ "$PATCHES_REUSED" == 1 ]] || die "Verified patch state was not marked reusable"
+)
+[[ "$(<"$SYNC_CWD_FILE")" == "$AOSP_DIR" ]] ||
+    die "AOSP repo scan did not run from the AOSP root"
+
 prepare_release_password
 [[ -f "$RELEASE_PASSWORD_TMP" ]] || die "Release password secret was not created"
 [[ "$(stat -c '%a' "$RELEASE_PASSWORD_TMP")" == "600" ]] ||

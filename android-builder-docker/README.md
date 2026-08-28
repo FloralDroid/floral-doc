@@ -99,10 +99,14 @@ RELEASE_KEY_PASSWORD_FILE=~/.floral-release-password \
 ```
 
 `--release` selects `${PRODUCT_NAME}-user`, builds `target-files-package` and
-`otatools-package`, then signs the result inside the builder container. The
-first run creates encrypted `releasekey`, `platform`, `shared`, `media`, and
-`networkstack` keys under `~/.floral/release-keys`; existing pairs are never
-overwritten. Do not use the example password for a real release.
+`otatools-package`, then signs the result inside the builder container.
+Before the build, the wrapper performs a network-only revision scan; when
+manifests, source revisions, and the patch set are unchanged and patch
+verification passes, it keeps the existing checkout and patch commits instead
+of resetting and reapplying them. The first run creates encrypted
+`releasekey`, `platform`, `shared`, `media`, and `networkstack` keys under
+`~/.floral/release-keys`; existing pairs are never overwritten. Do not use the
+example password for a real release.
 
 If the target-files build already completed but signing failed, rebuild the
 builder image after Dockerfile changes and sign the existing package without
