@@ -27,6 +27,31 @@ PATCH_FLOW="$AOSP_DIR/patch-flow"
 
 mkdir -p "$AOSP_DIR/.repo/manifests" "$SOURCE_REPO" "$PATCH_ROOT"
 mkdir -p "$FAKE_BIN"
+
+PRODUCT_NAME=redroid_arm64
+LUNCH_TARGET=redroid_arm64-userdebug
+RUNTIME_PLATFORM=""
+RUNTIME_IMAGE=""
+EXPORT_FILE=""
+configure_product
+[[ "$RUNTIME_PLATFORM" == linux/arm64 ]] ||
+    die "ARM64 product did not select the ARM64 runtime platform"
+[[ "$RUNTIME_IMAGE" == floral:12.0.0-arm64 ]] ||
+    die "ARM64 product did not select an architecture-specific runtime image"
+[[ "$EXPORT_FILE" == "$HOME/floral-12.0.0-arm64.tar.gz" ]] ||
+    die "ARM64 product did not select an architecture-specific export file"
+
+PRODUCT_NAME=redroid_x86_64
+LUNCH_TARGET=redroid_x86_64-userdebug
+RUNTIME_PLATFORM=""
+RUNTIME_IMAGE=""
+EXPORT_FILE=""
+configure_product
+[[ "$RUNTIME_PLATFORM" == linux/amd64 ]] ||
+    die "x86_64 product did not retain the AMD64 runtime platform"
+[[ "$RUNTIME_IMAGE" == floral:12.0.0 ]] ||
+    die "x86_64 product did not retain the existing runtime image name"
+
 git -C "$SOURCE_REPO" init --quiet
 git -C "$SOURCE_REPO" config user.name "Floral Build Test"
 git -C "$SOURCE_REPO" config user.email "build-test@floraldroid.invalid"

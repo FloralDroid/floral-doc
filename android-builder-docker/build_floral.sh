@@ -20,7 +20,7 @@ BUILDER_IMAGE="${BUILDER_IMAGE:-floral-builder}"
 BUILDER_CONTAINER="${BUILDER_CONTAINER:-floral-builder}"
 
 PRODUCT_NAME="${PRODUCT_NAME:-redroid_x86_64}"
-LUNCH_TARGET="${LUNCH_TARGET:-redroid_x86_64-userdebug}"
+LUNCH_TARGET="${LUNCH_TARGET:-${PRODUCT_NAME}-userdebug}"
 PRODUCT_DIR="${PRODUCT_DIR:-${AOSP_DIR}/out/target/product/${PRODUCT_NAME}}"
 BUILD_LOG="${BUILD_LOG:-${AOSP_DIR}/out/floral-build.log}"
 
@@ -30,9 +30,9 @@ RELEASE_KEY_PASSWORD_FILE="${RELEASE_KEY_PASSWORD_FILE:-}"
 RELEASE_KEY_SUBJECT="${RELEASE_KEY_SUBJECT:-/O=FloralDroid/OU=Release/CN=FloralDroid Release}"
 RELEASE_OUTPUT_DIR="${RELEASE_OUTPUT_DIR:-${AOSP_DIR}/out/release/${PRODUCT_NAME}}"
 
-RUNTIME_IMAGE="${RUNTIME_IMAGE:-floral:12.0.0}"
-RUNTIME_PLATFORM="${RUNTIME_PLATFORM:-linux/amd64}"
-EXPORT_FILE="${EXPORT_FILE:-${HOME}/floral-12.0.0.tar.gz}"
+RUNTIME_IMAGE="${RUNTIME_IMAGE:-}"
+RUNTIME_PLATFORM="${RUNTIME_PLATFORM:-}"
+EXPORT_FILE="${EXPORT_FILE:-}"
 
 JOBS="${JOBS:-$(nproc)}"
 
@@ -242,6 +242,33 @@ configure_sudo() {
     fi
 }
 
+configure_product() {
+    local expected_platform
+    local image_suffix
+
+    case "$PRODUCT_NAME" in
+        redroid_arm64|redroid_arm64_only)
+            expected_platform="linux/arm64"
+            image_suffix="-arm64"
+            ;;
+        redroid_x86_64|redroid_x86_64_only)
+            expected_platform="linux/amd64"
+            image_suffix=""
+            ;;
+        *)
+            die "Unsupported PRODUCT_NAME: $PRODUCT_NAME"
+            ;;
+    esac
+
+    if [[ -n "$RUNTIME_PLATFORM" && "$RUNTIME_PLATFORM" != "$expected_platform" ]]; then
+        die "RUNTIME_PLATFORM $RUNTIME_PLATFORM does not match $PRODUCT_NAME ($expected_platform)"
+    fi
+
+    RUNTIME_PLATFORM="$expected_platform"
+    RUNTIME_IMAGE="${RUNTIME_IMAGE:-floral:12.0.0${image_suffix}}"
+    EXPORT_FILE="${EXPORT_FILE:-${HOME}/floral-12.0.0${image_suffix}.tar.gz}"
+}
+
 configure_release() {
     if ((!RELEASE_BUILD)); then
         return
@@ -304,6 +331,10 @@ validate_configuration() {
         die "PATCH_HISTORY_DEPTH must be a positive integer"
     [[ "$PRODUCT_NAME" =~ ^[A-Za-z0-9._-]+$ ]] || die "Invalid PRODUCT_NAME"
     [[ "$LUNCH_TARGET" =~ ^[A-Za-z0-9._-]+$ ]] || die "Invalid LUNCH_TARGET"
+    [[ "$LUNCH_TARGET" == "${PRODUCT_NAME}-"* ]] ||
+        die "LUNCH_TARGET must select PRODUCT_NAME $PRODUCT_NAME"
+    [[ "${PRODUCT_DIR%/}" == */"$PRODUCT_NAME" ]] ||
+        die "PRODUCT_DIR must end with PRODUCT_NAME $PRODUCT_NAME"
     [[ "$BUILDER_CONTAINER" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]+$ ]] ||
         die "Invalid BUILDER_CONTAINER"
 
@@ -1103,6 +1134,7 @@ export_runtime_image() {
 
 main() {
     parse_args "$@"
+    configure_product
     configure_release
     if ((!SKIP_IMPORT)); then
         configure_sudo
